@@ -2,16 +2,22 @@
   "name": "taskforge-qa",
   "version": "1.0.0",
   "private": true,
-  "description": "Playwright + JavaScript (CommonJS) QA automation suite for TaskForge",
+  "description": "Playwright + TypeScript (Page Object Model) QA automation suite for TaskForge",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
+    "postinstall": "playwright install chromium firefox webkit",
+    "setup": "npm install",
     "test": "playwright test",
-    "test:auth": "playwright test tests/00-auth.spec.js",
-    "test:auth:chrome": "playwright test tests/00-auth.spec.js --project=auth-chrome",
-    "test:auth:firefox": "playwright test tests/00-auth.spec.js --project=auth-firefox",
-    "test:auth:webkit": "playwright test tests/00-auth.spec.js --project=auth-webkit",
-    "test:auth:all": "playwright test tests/00-auth.spec.js --project=auth-chrome --project=auth-firefox --project=auth-webkit",
-    "test:auth:headed": "playwright test tests/00-auth.spec.js --project=auth-chrome --headed",
-    "test:setup": "playwright test tests/auth.setup.js --project=setup",
+    "typecheck": "tsc --noEmit",
+    "test:auth": "playwright test tests/00-auth.spec.ts",
+    "test:auth:chrome": "playwright test tests/00-auth.spec.ts --project=auth-chrome",
+    "test:auth:firefox": "playwright test tests/00-auth.spec.ts --project=auth-firefox",
+    "test:auth:webkit": "playwright test tests/00-auth.spec.ts --project=auth-webkit",
+    "test:auth:all": "playwright test tests/00-auth.spec.ts --project=auth-chrome --project=auth-firefox --project=auth-webkit",
+    "test:auth:headed": "playwright test tests/00-auth.spec.ts --project=auth-chrome --headed",
+    "test:setup": "playwright test tests/auth.setup.ts --project=setup",
     "test:modules": "playwright test --project=modules-chrome --project=modules-firefox --project=modules-webkit",
     "test:modules:chrome": "playwright test --project=modules-chrome",
     "test:modules:firefox": "playwright test --project=modules-firefox",
@@ -21,6 +27,8 @@
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
-    "dotenv": "^18.0.9"
+    "@types/node": "^26.6.6",
+    "dotenv": "^18.0.9",
+    "typescript": "^7.0.2"
   }
 }

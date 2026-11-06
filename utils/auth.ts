@@ -1,15 +1,12 @@
-'use strict';
-
-const fs = require('node:fs');
-const path = require('node:path');
-const { expect } = require('@playwright/test');
-const { env } = require('./env');
-const { gotoWithRetry } = require('./navigation');
-const { LoginPage } = require('../../pages/LoginPage');
-const { WorkspacePage } = require('../../pages/WorkspacePage');
+import fs from 'node:fs';
+import path from 'node:path';
+import type { Browser, Page } from '@playwright/test';
+import { LoginPage, INVALID_CREDENTIALS } from '../pages/LoginPage';
+import { WorkspacePage } from '../pages/WorkspacePage';
+import type { Credentials } from './env';
+import { env } from './env';
 
 const SIGN_IN_ENDPOINT = '/api/v1/auth/sign-in/email';
-const INVALID_CREDENTIALS = /invalid email or password/i;
 
 // Better Auth's built-in custom rule for /sign-in/email is 3 requests per
 // 10 seconds. TaskForge returns 429 when that is exceeded. The suite uses one
@@ -18,9 +15,47 @@ const INVALID_CREDENTIALS = /invalid email or password/i;
 const LOGIN_WINDOW_MS = 10_000;
 const LOGIN_MAX_REQUESTS = 3;
 const LOGIN_WINDOW_SAFETY_MS = 1_000;
-let loginRequestTimestamps = [];
+let loginRequestTimestamps: number[] = [];
 
-async function waitForLoginSlot() {
+export type LoginOutcome =
+  | 'success'
+  | 'invalid'
+  | 'rate_limited'
+  | 'timeout'
+  | 'error';
+
+export interface LoginAttempt {
+  attempt: number;
+  outcome: LoginOutcome;
+  startedAt: string;
+  durationMs: number;
+  status?: number;
+  retryAfterMs?: number;
+  contentType?: string;
+  apiCode?: string;
+  apiKeys?: string[];
+  credentialUrlLeak: boolean;
+  url: string;
+  alert?: string;
+  error?: string;
+}
+
+export interface LoginResult {
+  success: boolean;
+  attempts: LoginAttempt[];
+}
+
+export interface LoginOptions {
+  attempts?: number;
+  retryDelayMs?: number;
+}
+
+export interface RateLimitRetryOptions {
+  maxRateLimitRetries?: number;
+  retryDelayMs?: number;
+}
+
+async function waitForLoginSlot(): Promise<void> {
   for (;;) {
     const now = Date.now();
     loginRequestTimestamps = loginRequestTimestamps.filter(
@@ -42,12 +77,17 @@ async function waitForLoginSlot() {
   }
 }
 
-function clean(value) {
-  return (value ?? '').replace(/\s+/g, ' ').trim();
+/**
+ * A retried sign-in can succeed after the previous attempt timed out waiting
+ * for the redirect. Treat an already-authenticated page as success instead of
+ * retrying against a page that no longer shows /login.
+ */
+async function isAuthenticated(page: Page): Promise<boolean> {
+  return new WorkspacePage(page).isAuthenticated();
 }
 
 /** Redacts credentials if a pre-hydration form submission put them in the URL. */
-function sanitizeUrl(value) {
+function sanitizeUrl(value: string): string {
   try {
     const url = new URL(value);
     for (const key of ['email', 'password', 'token', 'code']) {
@@ -61,7 +101,7 @@ function sanitizeUrl(value) {
   }
 }
 
-function hasCredentialQuery(value) {
+function hasCredentialQuery(value: string): boolean {
   try {
     const url = new URL(value);
     return url.searchParams.has('email') || url.searchParams.has('password');
@@ -71,53 +111,30 @@ function hasCredentialQuery(value) {
 }
 
 /**
- * A native form submission before React hydrates performs a GET and leaks the
- * password into the URL (QA-012). Wait for React's onSubmit handler to be
- * attached before filling or clicking the form.
- */
-async function waitForLoginFormHydration(page) {
-  await new LoginPage(page).waitForHydration();
-}
-
-/**
- * Next.js renders its route announcer with role="alert" as well, so a plain
- * getByRole('alert') can be ambiguous. Read the first alert that has text.
- */
-async function readAlert(page) {
-  const alerts = page.locator('[role="alert"]');
-  const count = await alerts.count();
-
-  for (let index = 0; index < count; index += 1) {
-    const text = clean(await alerts.nth(index).textContent().catch(() => ''));
-    if (text) {
-      return text;
-    }
-  }
-
-  return '';
-}
-
-/**
  * Submits the login form on the current /login page and reports the exact
  * outcome. It never throws for an expected 401/invalid-credentials response.
  */
-async function attemptLogin(page, credentials, attempt = 1) {
+export async function attemptLogin(
+  page: Page,
+  credentials: Credentials,
+  attempt = 1,
+): Promise<LoginAttempt> {
   const startedAt = new Date().toISOString();
   const start = Date.now();
-  let status;
-  let retryAfterMs;
-  let contentType;
-  let apiCode;
-  let apiKeys;
+  const loginPage = new LoginPage(page);
+  const workspacePage = new WorkspacePage(page);
+  let status: number | undefined;
+  let retryAfterMs: number | undefined;
+  let contentType: string | undefined;
+  let apiCode: string | undefined;
+  let apiKeys: string[] | undefined;
   let alertText = '';
-  let outcome = 'error';
-  let error;
+  let outcome: LoginOutcome = 'error';
+  let error: string | undefined;
 
   try {
-    const loginPage = new LoginPage(page);
-
-    await loginPage.emailInput.waitFor({ state: 'visible', timeout: 15_000 });
-    await waitForLoginFormHydration(page);
+    await loginPage.waitForForm();
+    await loginPage.waitForHydration();
 
     // Keep the suite below Better Auth's 3-per-10s sign-in limit. Wait before
     // filling the form so a slow gate cannot race a client-side re-render and
@@ -155,63 +172,52 @@ async function attemptLogin(page, credentials, attempt = 1) {
         ? retryAfterSeconds * 1_000
         : undefined;
 
-      const body = await response.json().catch(() => undefined);
+      const body: unknown = await response.json().catch(() => undefined);
       if (body && typeof body === 'object') {
         apiKeys = Object.keys(body).sort();
-        if (typeof body.code === 'string') {
-          apiCode = body.code;
+        const code = (body as { code?: unknown }).code;
+        if (typeof code === 'string') {
+          apiCode = code;
         }
       }
     }
 
     try {
-      const handle = await page.waitForFunction(
-        () => {
-          const alert = document.querySelector('[role="alert"]');
-          const text = (alert?.textContent ?? '').replace(/\s+/g, ' ').trim();
-
-          if (window.location.pathname !== '/login') {
-            return { kind: 'success' };
-          }
-
-          if (/invalid email or password/i.test(text)) {
-            return { kind: 'invalid', text };
-          }
-
-          return false;
-        },
-        undefined,
-        { timeout: 20_000 },
-      );
-
-      const value = await handle.jsonValue();
+      const value = await loginPage.waitForSignInOutcome();
 
       if (value.kind === 'success') {
         // Wait for the authenticated shell, not just the URL change.
-        await page
-          .getByRole('button', { name: 'Account menu' })
-          .waitFor({ state: 'visible', timeout: 20_000 });
+        await workspacePage.waitForAuthenticated();
         outcome = 'success';
       } else {
-        alertText = clean(value.text);
+        alertText = value.text;
         outcome = status === 429 ? 'rate_limited' : 'invalid';
       }
     } catch {
-      // Fall through and classify from the final page state.
-      alertText = await readAlert(page);
-      if (status === 429) {
-        outcome = 'rate_limited';
-      } else if (INVALID_CREDENTIALS.test(alertText)) {
-        outcome = 'invalid';
+      // The redirect can land just after the wait expires. Confirm the page
+      // state before calling the attempt a failure.
+      if (await workspacePage.isAuthenticated()) {
+        outcome = 'success';
       } else {
-        outcome = 'timeout';
-        error = `Timed out waiting for sign-in outcome (path=${new URL(page.url()).pathname}, status=${status ?? 'n/a'})`;
+        alertText = await loginPage.readAlert();
+        if (status === 429) {
+          outcome = 'rate_limited';
+        } else if (INVALID_CREDENTIALS.test(alertText)) {
+          outcome = 'invalid';
+        } else {
+          outcome = 'timeout';
+          error = `Timed out waiting for sign-in outcome (path=${loginPage.currentPath()}, status=${status ?? 'n/a'})`;
+        }
       }
     }
   } catch (cause) {
-    outcome = 'error';
-    error = cause instanceof Error ? cause.message : String(cause);
-    alertText = await readAlert(page);
+    if (await isAuthenticated(page)) {
+      outcome = 'success';
+    } else {
+      outcome = 'error';
+      error = cause instanceof Error ? cause.message : String(cause);
+      alertText = await loginPage.readAlert();
+    }
   }
 
   return {
@@ -232,17 +238,17 @@ async function attemptLogin(page, credentials, attempt = 1) {
 }
 
 /** Opens /login and waits for the form, retrying transient navigation errors. */
-async function openLoginPage(page, options = {}) {
+export async function openLoginPage(
+  page: Page,
+  options: { attempts?: number; delayMs?: number } = {},
+): Promise<void> {
   const maxAttempts = options.attempts ?? 3;
   const delayMs = options.delayMs ?? 1_500;
-  let lastError;
+  let lastError: unknown;
 
   for (let current = 1; current <= maxAttempts; current += 1) {
     try {
-      const loginPage = new LoginPage(page);
-      await gotoWithRetry(page, '/login', { attempts: 2 });
-      await loginPage.emailInput.waitFor({ state: 'visible', timeout: 15_000 });
-      await loginPage.waitForHydration();
+      await new LoginPage(page).goto({ waitForHydration: true });
       return;
     } catch (cause) {
       lastError = cause;
@@ -260,15 +266,15 @@ async function openLoginPage(page, options = {}) {
  * returns 429 with X-Retry-After. Invalid credentials and timeouts are returned
  * immediately so callers can assert the real authentication outcome.
  */
-async function loginWithRateLimitRetry(
-  page,
-  credentials,
+export async function loginWithRateLimitRetry(
+  page: Page,
+  credentials: Credentials,
   attemptNumber = 1,
-  options = {},
-) {
+  options: RateLimitRetryOptions = {},
+): Promise<LoginAttempt[]> {
   const maxRetries = options.maxRateLimitRetries ?? 2;
   const fallbackDelayMs = options.retryDelayMs ?? 5_000;
-  const attempts = [];
+  const attempts: LoginAttempt[] = [];
 
   for (let current = 0; current <= maxRetries; current += 1) {
     const result = await attemptLogin(page, credentials, attemptNumber);
@@ -281,6 +287,12 @@ async function loginWithRateLimitRetry(
     await page.waitForTimeout(
       Math.max(result.retryAfterMs ?? fallbackDelayMs, 1_000),
     );
+
+    if (await isAuthenticated(page)) {
+      result.outcome = 'success';
+      return attempts;
+    }
+
     await openLoginPage(page);
   }
 
@@ -291,12 +303,22 @@ async function loginWithRateLimitRetry(
  * Logs in with retries. Retries are recorded, not hidden, so QA-003 remains
  * visible in the attached diagnostics.
  */
-async function loginWithRetry(page, credentials, options = {}) {
+export async function loginWithRetry(
+  page: Page,
+  credentials: Credentials,
+  options: LoginOptions = {},
+): Promise<LoginResult> {
   const maxAttempts = options.attempts ?? 3;
   const retryDelayMs = options.retryDelayMs ?? 1_500;
-  const attempts = [];
+  const attempts: LoginAttempt[] = [];
 
   for (let current = 1; current <= maxAttempts; current += 1) {
+    // A previous attempt may have finished logging in after its wait expired.
+    if (current > 1 && (await isAuthenticated(page))) {
+      attempts.at(-1)!.outcome = 'success';
+      return { success: true, attempts };
+    }
+
     let loginPageReady = false;
 
     try {
@@ -327,10 +349,17 @@ async function loginWithRetry(page, credentials, options = {}) {
 
     if (current < maxAttempts) {
       const lastAttempt = attempts.at(-1);
-      const backoffMs =
-        lastAttempt?.outcome === 'rate_limited'
-          ? Math.max(lastAttempt.retryAfterMs ?? 0, retryDelayMs * current * 2)
-          : retryDelayMs * current;
+      let backoffMs = retryDelayMs * current;
+
+      if (lastAttempt?.outcome === 'rate_limited') {
+        // The server's window may include requests from an earlier run, so
+        // wait a full window and let the local pacer start clean.
+        loginRequestTimestamps = [];
+        backoffMs = Math.max(
+          lastAttempt.retryAfterMs ?? 0,
+          LOGIN_WINDOW_MS + LOGIN_WINDOW_SAFETY_MS,
+        );
+      }
 
       await page.waitForTimeout(backoffMs);
     }
@@ -343,7 +372,12 @@ async function loginWithRetry(page, credentials, options = {}) {
  * Logs into a disposable context (used by the auth setup project) and writes
  * the storage state for later module specs.
  */
-async function loginAndSaveState(browser, credentials, storagePath, options = {}) {
+export async function loginAndSaveState(
+  browser: Browser,
+  credentials: Credentials,
+  storagePath: string,
+  options: LoginOptions = {},
+): Promise<LoginResult> {
   fs.mkdirSync(path.dirname(storagePath), { recursive: true });
 
   const context = await browser.newContext({ baseURL: env.baseURL });
@@ -361,33 +395,15 @@ async function loginAndSaveState(browser, credentials, storagePath, options = {}
 }
 
 /** Asserts that the app shell is rendered for an authenticated user. */
-async function expectAuthenticated(page) {
+export async function expectAuthenticated(page: Page): Promise<void> {
   await new WorkspacePage(page).expectAuthenticated();
 }
 
-/** Logs out through the account menu and waits for the login page. */
-async function logout(page) {
-  const workspacePage = new WorkspacePage(page);
-
-  await workspacePage.openAccountMenu();
-  await workspacePage.logOut();
-
-  try {
-    await workspacePage.waitForLoginUrl();
-  } catch (cause) {
-    // Logging out clears the auth cookie and navigates to /login. If that
-    // navigation hits a transient DNS/network error, verify the cleared
-    // session with an explicit navigation instead of failing on the redirect.
-    await gotoWithRetry(page, '/login');
-
-    if (new URL(page.url()).pathname !== '/login') {
-      throw cause;
-    }
-  }
-}
-
 /** Human-readable diagnostics for a failed login assertion. */
-function formatLoginDiagnostics(result) {
+export function formatLoginDiagnostics(result: {
+  attempts: LoginAttempt[];
+  success?: boolean;
+}): string {
   const lines = result.attempts.map((attempt) => {
     const status = attempt.status ?? 'n/a';
     return [
@@ -408,16 +424,3 @@ function formatLoginDiagnostics(result) {
     ...lines,
   ].join('\n');
 }
-
-module.exports = {
-  attemptLogin,
-  expectAuthenticated,
-  formatLoginDiagnostics,
-  gotoWithRetry,
-  loginAndSaveState,
-  loginWithRateLimitRetry,
-  loginWithRetry,
-  logout,
-  openLoginPage,
-  waitForLoginFormHydration,
-};

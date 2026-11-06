@@ -1,8 +1,27 @@
+# Dependencies
 node_modules/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+playwright/.cache/
+
+# Environment
 .env
 .env.*
 !.env.example
+
+# Authentication state
 playwright/.auth/
-test-results/
-playwright-report/
-blob-report/
+storageState.json
+
+# QA artifacts
+qa/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/

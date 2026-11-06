@@ -1,67 +1,84 @@
 # TaskForge Playwright Suite
 
-TypeScript + Playwright end-to-end tests for `https://mytaskforge.net/`.
+TypeScript (Page Object Model) + Playwright end-to-end tests for `https://mytaskforge.net/`.
+
+## Project structure
+
+```text
+pages/        Page objects: all locators and page actions live here
+  BasePage.ts
+  LoginPage.ts
+  WorkspacePage.ts
+fixtures/     Playwright fixtures that inject page objects and credentials
+utils/        Shared auth, env and navigation helpers
+tests/        Specs and the auth setup project
+```
+
+Follow the Page Object Model: specs call page-object methods and must not use
+`page.locator(...)` or page-specific `getByRole(...)` directly. Add a new method
+to the relevant page object instead.
 
 ## Prerequisites
 
-- Node.js 20+ (tested with Node 24.21.0, npm 11.19.0).
-- Google Chrome installed (`channel: "chrome"` is used in `playwright.config.ts`).
+- Node.js 20+ on macOS or Windows.
+- Google Chrome installed (the `*-chrome` projects use `channel: "chrome"`).
 - `.env` at the project root:
 
 ```dotenv
 BASE_URL = https://mytaskforge.net/
 owner_email = <owner sign-in email>
-owner_password = <owner password>
+owner_password = "<owner password>"
 # optional, defaults to /abdul-s-workspace
 WORKSPACE_PATH = /abdul-s-workspace
 ```
 
-`.env` is gitignored. Never commit credentials or storage state.
+`.env` is gitignored. Never commit credentials or storage state. Quote the
+password if it contains `#`; dotenv treats an unquoted `#` as a comment.
 
 ## Install
-
-```powershell
+ 
+```sh
 npm install
 ```
 
-Playwright uses the system Chrome channel, so no `playwright install` is
-required unless you change the channel to bundled Chromium.
+`postinstall` downloads the Playwright Chromium, Firefox and WebKit builds.
+The Chrome projects still use your installed Google Chrome.
 
 ## Projects
 
 | Project | Files | Auth state | Purpose |
 |---|---|---|---|
-| `auth` | `tests/00-auth.spec.ts` | empty | Standalone auth coverage; every test starts logged out |
+| `auth-chrome`, `auth-firefox`, `auth-webkit` | `tests/00-auth.spec.ts` | empty | Standalone auth coverage; every test starts logged out |
 | `setup` | `tests/auth.setup.ts` | empty | Logs in once and writes `playwright/.auth/user.json` |
-| `modules` | `tests/0[1-9]-*.spec.ts`, `tests/1[0-9]-*.spec.ts` | saved | Module specs reuse the saved session |
+| `modules-chrome`, `modules-firefox`, `modules-webkit` | `tests/0[1-9]-*.spec.ts`, `tests/1[0-9]-*.spec.ts` | saved | Module specs reuse the saved session |
 
 Run everything:
 
-```powershell
+```sh
 npm test
 ```
 
-Run only auth:
+Run only auth (all three browsers):
 
-```powershell
-npm run test:auth
+```sh
+npm run test:auth:all
 ```
 
 Refresh the saved session without running module tests:
 
-```powershell
+```sh
 npm run test:setup
 ```
 
 Type-check:
 
-```powershell
+```sh
 npm run typecheck
 ```
 
 HTML report:
 
-```powershell
+```sh
 npm run report
 ```
 
@@ -80,7 +97,7 @@ account.
 ## Known constraints handled by the helpers
 
 - **Rate limiting:** Better Auth limits `/sign-in/email`; TaskForge returns
-  `429` with `X-Retry-After`. `tests/helpers/auth.ts` paces submissions and
+  `429` with `X-Retry-After`. `utils/auth.ts` paces submissions and
   retries after the advertised delay. Do not run multiple auth tests in
   parallel with the same account.
 - **Hydration:** submitting `/login` before React attaches `onSubmit` causes a
@@ -104,9 +121,10 @@ tests/02-tasks.spec.ts
 tests/17-settings.spec.ts
 ```
 
-The `modules` project automatically picks up `01` through `17` and supplies
+The `modules-*` projects automatically pick up `01` through `17` and supply
 `playwright/.auth/user.json`. Keep tests non-destructive unless the scenario is
-explicitly approved. Reuse the helpers rather than logging in inside each spec.
+explicitly approved. Reuse the `loginPage` / `workspacePage` fixtures rather
+than logging in or querying the DOM inside each spec.
 
 ## Safety
 
