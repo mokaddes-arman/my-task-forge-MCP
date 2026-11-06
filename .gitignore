@@ -18,6 +18,8 @@ storageState.json
 
 # QA artifacts
 qa/
+.playwright-mcp/
+qa-login-failed.png
 
 # OS files
 .DS_Store

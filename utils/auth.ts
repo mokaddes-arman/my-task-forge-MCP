@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Browser, Page } from '@playwright/test';
+import type { Browser, BrowserContext, Page } from '@playwright/test';
 import { LoginPage, INVALID_CREDENTIALS } from '../pages/LoginPage';
 import { WorkspacePage } from '../pages/WorkspacePage';
 import type { Credentials } from './env';
-import { env } from './env';
+import { env, STORAGE_STATE } from './env';
 
 const SIGN_IN_ENDPOINT = '/api/v1/auth/sign-in/email';
 
@@ -397,6 +397,28 @@ export async function loginAndSaveState(
 /** Asserts that the app shell is rendered for an authenticated user. */
 export async function expectAuthenticated(page: Page): Promise<void> {
   await new WorkspacePage(page).expectAuthenticated();
+}
+
+/**
+ * Re-applies the cookies from the saved storage state to an existing context.
+ * Module specs use this after a transient /login redirect (QA-003-class auth
+ * flake). It never signs in through the UI and never changes credentials.
+ */
+export async function restoreSessionCookies(
+  context: BrowserContext,
+  storagePath: string = STORAGE_STATE,
+): Promise<void> {
+  if (!fs.existsSync(storagePath)) {
+    return;
+  }
+
+  const state = JSON.parse(fs.readFileSync(storagePath, 'utf8')) as {
+    cookies?: Parameters<BrowserContext['addCookies']>[0];
+  };
+
+  if (state.cookies?.length) {
+    await context.addCookies(state.cookies);
+  }
 }
 
 /** Human-readable diagnostics for a failed login assertion. */

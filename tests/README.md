@@ -7,9 +7,15 @@ TypeScript (Page Object Model) + Playwright end-to-end tests for `https://mytask
 ```text
 pages/        Page objects: all locators and page actions live here
   BasePage.ts
+  AppShellPage.ts
+  HomePage.ts
+  TasksPage.ts
+  CalendarPage.ts
   LoginPage.ts
   WorkspacePage.ts
 fixtures/     Playwright fixtures that inject page objects and credentials
+  auth.fixture.ts
+  pages.fixture.ts
 utils/        Shared auth, env and navigation helpers
 tests/        Specs and the auth setup project
 ```
@@ -84,15 +90,80 @@ npm run report
 
 ## Auth coverage (`tests/00-auth.spec.ts`)
 
-1. Valid owner credentials authenticate and render the workspace shell.
-2. Invalid credentials show the inline error and do not create a session.
-3. Authenticated `storageState` persists into a new browser context.
-4. Logout clears the session and protects workspace routes.
-5. QA-003 regression guard: 3 fresh-context sign-ins must all succeed.
+`Login page UI`
+
+1. Renders the form, password toggle, forgot-password and register links.
+2. Empty fields show inline validation without calling the sign-in API.
+3. An invalid email format is rejected before the sign-in API.
+4. Password visibility toggles without losing the value.
+
+`Authentication`
+
+5. Valid owner credentials authenticate and return a JSON API response.
+6. Invalid credentials return `401` and do not create a session.
+7. Authenticated `storageState` persists into a new browser context.
+8. A fresh unauthenticated context is redirected from protected routes.
+9. Logout clears the session and protects workspace routes.
+10. Clearing session cookies redirects protected routes to login.
+11. QA-003 regression guard: repeated fresh-context sign-ins are consistent.
 
 Animations/loading are handled with visibility and response/URL assertions, not
 fixed sleeps. The suite is serial (`workers: 1`) because it uses one shared owner
 account.
+
+## Module coverage
+
+| # | Module | Spec | Page object |
+|---|---|---|---|
+| 01 | Home | `tests/01-home.spec.ts` | `pages/HomePage.ts` (extends `AppShellPage`) |
+| 02 | Tasks | `tests/02-tasks.spec.ts` | `pages/TasksPage.ts` (extends `AppShellPage`) |
+| 03 | Calendar | `tests/03-calendar.spec.ts` | `pages/CalendarPage.ts` (extends `AppShellPage`) |
+| 04 | Schedule | planned | planned |
+| 05 | Time clock | planned | planned |
+| 06 | Timesheets | planned | planned |
+| 07 | Leave | planned | planned |
+| 08 | Labor cost | planned | planned |
+| 09 | Payroll | planned | planned |
+| 10 | Working now | planned | planned |
+| 11 | Chat | planned | planned |
+| 12 | Announcements | planned | planned |
+| 13 | Notifications | planned | planned |
+| 14 | Projects | planned | planned |
+| 15 | Departments | planned | planned |
+| 16 | Employees | planned | planned |
+| 17 | Settings | planned | planned |
+
+### Module 1 — Home
+
+Read-only checks: dashboard load and greeting, six KPI cards with well-formed
+values, setup checklist link targets plus one navigation test per step, quick
+access links, My day widgets and leave balances, loading-skeleton replacement
+(QA-007), and the global shell/sidebar plus realtime status (QA-001).
+
+Module specs use `fixtures/pages.fixture.ts`, which injects page objects and a
+saved-session restore hook. A transient `/login` redirect on module navigation is
+retried once without repeating UI login; auth behaviour itself stays covered by
+`tests/00-auth.spec.ts`.
+
+### Module 2 — Tasks
+
+Read-only checks: module load, numeric tab counts, all five tab routes and
+selection state, per-tab zero-state copy, search no-match and clear behaviour,
+Status + Priority filter combinations with clear-filters recovery, filter
+popover option sets, and the due-from/due-until date-range controls. Task
+creation, editing, completion and deletion are deferred because they mutate the
+shared workspace.
+
+### Module 3 — Calendar
+
+Read-only checks: month view load, month grid structure, previous/next/Today
+navigation and Today disabled state on the current period, Month/Week view
+switching with a seven-day week grid and week navigation, independent layer
+toggles, Department/Project/Employee filter combinations with clear-filters
+recovery, filter option/search-box inventories, and the empty-month copy over an
+intact grid. Event drill-down, timezone-boundary placement and event show/hide
+verification are deferred until scheduled data exists.
+
 
 ## Known constraints handled by the helpers
 
